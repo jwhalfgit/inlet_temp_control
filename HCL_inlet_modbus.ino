@@ -46,7 +46,6 @@ Adafruit_MAX31865 max3 = Adafruit_MAX31865(8, 11, 12, 13);
 // The 'nominal' 0-degrees-C resistance of the sensor
 // 100.0 for PT100, 1000.0 for PT1000
 #define RNOMINAL  100.0
-
 // initial values
 #define RAMP_DURATION 60  //this is now in seconds
 #define RAMP_SETPOINT 100  //degC
@@ -60,6 +59,9 @@ double Input2, Input3;
 // pt100 fault
 uint8_t fault1;
 
+// ramp value to wait until after cal valve closed
+int rampval = 0;
+
 //Define the aggressive and conservative Tuning Parameters
 double aggKp=15, aggKi=0, aggKd=0;
 //double aggKp=4, aggKi=0.2, aggKd=1;
@@ -72,6 +74,12 @@ PID myPID1(&Input1, &Output1, &Setpoint1, consKp, consKi, consKd, DIRECT);
 
 //setup the timers
 millisDelay ramp_timer; 
+
+//debounce variables
+unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+unsigned long debounceDelay = 500;    // the debounce time; increase if the output flickers
+int buttonState;            // the current reading from the input pin
+int lastButtonState = 0;  // the previous reading from the input pin
 
 //give modbus reg numbers names
   const int CC = 0;     //0 = contact closure from ZERO valve
@@ -161,10 +169,13 @@ void loop() {
   update_values();  //change to update from modbus register sync
 
 //contact closure is pulled high, take it low to GND to trigger it
-  if(((mb.Hreg(CC) == 1)||(mb.Hreg(MT) == 1))&&(!ramp_timer.isRunning())){
- 
+if( ((mb.Hreg(CC) == 1) || (mb.Hreg(MT) == 1)) && (!ramp_timer.isRunning()) ) {
+    rampval = 1;
+  }
+  if(((mb.Hreg(CC) == 0)&&(rampval == 1))&&(!ramp_timer.isRunning())){
     ramp_timer.start(mb.Hreg(R_dur)*1000);  //start a timer convert seconds to mSec
     
+    rampval = 0;
   }  
 
   if(ramp_timer.isRunning()){
@@ -224,7 +235,24 @@ void temperature_control(){
 void update_values(){
 
 //check for a contact closure
-mb.Hreg(CC,!digitalRead(CC_pin));
+int trigger = !digitalRead(CC_pin);
+// If the switch changed, due to noise or pressing:
+if (trigger != lastButtonState) {
+  // reset the debouncing timer
+  lastDebounceTime = millis();
+}
+
+if ((millis() - lastDebounceTime) > debounceDelay) {
+  // whatever the reading is at, it's been there for longer than the debounce
+  // delay, so take it as the actual current state:
+    if (trigger == 1) {
+      mb.Hreg(CC,1);
+    }
+    else{
+      mb.Hreg(CC,0);
+    }
+}
+lastButtonState = trigger;  
 
 //update the modbus value of setpoint
 mb.Hreg(set1, Setpoint1); 
